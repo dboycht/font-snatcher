@@ -22,6 +22,13 @@ const decoderReady = new Promise((resolve, reject) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  // This document ONLY handles conversion/download requests that the
+  // background explicitly routes to it. Everything else (DOWNLOAD_FONT,
+  // GET_FONTS, SCAN_FONTS, ...) is addressed to other extension contexts;
+  // return false so we never steal the response channel.
+  if (!message || (message.type !== 'CONVERT_AND_DOWNLOAD' && message.type !== 'DOWNLOAD_BYTES')) {
+    return false;
+  }
   (async () => {
     try {
       switch (message.type) {
@@ -40,6 +47,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const ext = detectExtension(bytes);
           return await downloadBytes(bytes, message.filename, ext);
         }
+        /* istanbul ignore next */
         default:
           return { ok: false, error: `Unknown offscreen message: ${message.type}` };
       }

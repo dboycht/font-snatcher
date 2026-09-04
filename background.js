@@ -357,6 +357,9 @@ async function ensureOffscreenDocument() {
       justification: 'Download font files and convert WOFF2 to TTF using DOM APIs.',
     }).catch((err) => {
       offscreenCreation = null;
+      // "already exists" is fine — some runtimes keep the doc alive across
+      // service worker restarts; treat it as success.
+      if (/already exists|existing offscreen/i.test(String(err && err.message))) return;
       throw err;
     });
   }
