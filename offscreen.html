@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Font Snatcher offscreen</title>
+</head>
+<body>
+  <!--
+    Offscreen document: MV3 service workers lack URL.createObjectURL / Blob
+    in some runtimes, so font conversion + downloads run in this hidden page,
+    which has the full DOM API. wawoff2 decoder is loaded here as a classic
+    <script> (reliable, no importScripts needed).
+  -->
+  <script src="vendor/wawoff2.js"></script>
+  <script src="offscreen.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+﻿data/
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+desktop.ini
+*.crx
+*.zip

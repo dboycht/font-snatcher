@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>Font Snatcher</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="header">
+    <h1 class="title">🔤 Font Snatcher</h1>
+    <p class="subtitle">点击页面上的文字，检测并下载它的字体文件</p>
+  </header>
+
+  <main class="content">
+    <button id="pickBtn" class="btn-pick">
+      <span class="pick-icon">🖱</span>
+      <span class="pick-text">点击页面文字<br /><small>进入「拾取字体」模式</small></span>
+    </button>
+    <p class="howto">进入模式后：<b>悬停</b>文字会高亮 → <b>单击</b>文字弹出字体面板 → 下载 WOFF2 / TTF。<br />
+      <b>Esc</b> 或右上角「退出」结束拾取。</p>
+
+    <div class="divider"></div>
+
+    <button id="listToggle" class="btn-secondary">📋 查看页面全部字体</button>
+    <div id="listWrap" class="list-wrap" hidden>
+      <div id="status" class="status hidden"></div>
+      <div id="list" class="list"></div>
+    </div>
+  </main>
+
+  <footer class="footer" id="footer" hidden>
+    <button id="downloadAllBtn" class="btn-primary">下载全部 WOFF2</button>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
