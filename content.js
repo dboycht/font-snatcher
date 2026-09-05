@@ -608,6 +608,55 @@
     }
   }
 
+  // Retry a failed background download using the PAGE's network context
+  // (shares user session / clearance cookies for bot-protected sites).
+  // Returns true if a download was submitted via the background.
+  async function pageContextDownload(family, sources, format, setMsg, btn) {
+    const ttfSrc = sources.find(
+      (s) => /\.(ttf|otf)(?:$|\?)/i.test(s.url) || (s.format && /^(ttf|otf)$/i.test(s.format))
+    );
+    const primary = ttfSrc || sources[0];
+    if (!primary || !primary.url) return false;
+    setMsg('🔄 尝试页面通道下载…');
+    try {
+      const resp = await fetch(primary.url, { credentials: 'include' });
+      if (!resp.ok) return false;
+      const buf = await resp.arrayBuffer();
+      if (!buf || buf.byteLength === 0) return false;
+      // base64 (string) avoids cross-context ArrayBuffer loss.
+      const bytes = new Uint8Array(buf);
+      const b64 = bytesToBase64(bytes);
+      const dl = await chrome.runtime.sendMessage({
+        type: 'DOWNLOAD_FONT_B64',
+        b64,
+        family,
+        format,
+        filename: family,
+      });
+      if (!dl || !dl.ok) {
+        setMsg(`✗ ${(dl && dl.error) || '下载失败'}`, 'err');
+        if (btn) setTimeout(() => { btn.disabled = false; }, 1500);
+        return false;
+      }
+      setMsg(dl.needsConvert ? '⏳ 已提交，正在下载…' : '✓ 已开始下载');
+      if (btn) setTimeout(() => { btn.disabled = false; }, 1500);
+      return true;
+    } catch (err) {
+      setMsg('✗ 页面通道失败：' + err.message, 'err');
+      if (btn) btn.disabled = false;
+      return false;
+    }
+  }
+
+  function bytesToBase64(bytes) {
+    const CHUNK = 0x8000;
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(bin);
+  }
+
   async function downloadFromOverlay(family, sources, format, btn) {
     if (btn) btn.disabled = true;
     const panel = shadowRoot && shadowRoot.querySelector('.panel');
@@ -650,8 +699,15 @@
       });
 
       if (!resp || !resp.ok) {
-        setMsg(`✗ ${(resp && resp.error) || '失败'}`, 'err');
-        if (btn) setTimeout(() => { btn.disabled = false; }, 1500);
+        // Background fetch may be blocked by the site (403 bot-protection
+        // like Cloudflare). Retry IN THE PAGE context: the page shares the
+        // user's session / clearance cookies, so page fetch often succeeds
+        // where the extension worker's fetch fails.
+        const pageOk = await pageContextDownload(family, sources, format, setMsg, btn);
+        if (!pageOk) {
+          setMsg(`✗ ${(resp && resp.error) || '失败'}`, 'err');
+          if (btn) setTimeout(() => { btn.disabled = false; }, 1500);
+        }
         return;
       }
 

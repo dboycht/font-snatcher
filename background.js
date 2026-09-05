@@ -11786,6 +11786,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return await handleGetFonts(message);
         case 'DOWNLOAD_FONT':
           return await handleDownloadFont(message);
+        case 'DOWNLOAD_FONT_B64':
+          return await handleDownloadFontB64(message);
         case 'GET_FONT_SOURCES':
           return await handleGetFontSources(message);
         case 'WATCH_DOWNLOAD':
@@ -12096,43 +12098,74 @@ async function handleDownloadFont(message) {
   }
 
   const wantTtf = format === 'ttf';
-  const willConvert = wantTtf && !ttfUrl && isWoff2(bytes);
-
   try {
-    let finalBytes = bytes;
-    let ext = detectExtension(bytes);
-
-    if (willConvert) {
-      // Convert WOFF2 -> TTF INLINE (same service-worker context, no
-      // cross-context ArrayBuffer transport which can lose data).
-      if (typeof self.FontSnatcherWoff2 !== 'undefined' && typeof self.BrotliDecompressBuffer === 'function') {
-        finalBytes = self.FontSnatcherWoff2.woff2ToTtf(bytes, (b) => {
-          const u8 = b instanceof Uint8Array ? b : new Uint8Array(b);
-          return self.BrotliDecompressBuffer(u8);
-        });
-        ext = 'ttf';
-      } else {
-        // Fallback: offscreen document.
-        const woff2Copy = bytes.slice().buffer;
-        await ensureOffscreenDocument();
-        const resp = await withTimeout(
-          chrome.runtime.sendMessage({ type: 'CONVERT_TO_TTF', woff2: woff2Copy }),
-          120000,
-          '转换超时'
-        );
-        if (!resp || !resp.ok) throw new Error((resp && resp.error) || '转换失败');
-        finalBytes = new Uint8Array(resp.ttf);
-        ext = 'ttf';
-      }
-    }
-
-    return await saveDownload(finalBytes, ext, sanitizeFilename(filename || family || 'font'));
+    return await convertAndSave(bytes, wantTtf, filename || family || 'font');
   } catch (err) {
-    if (willConvert) {
+    if (wantTtf) {
       return { ok: false, error: `转换 TTF 失败：${err.message}（你可改用 WOFF2 下载）` };
     }
     return { ok: false, error: `下载失败：${err.message}` };
   }
+}
+
+// ---------------------------------------------------------------------------
+// DOWNLOAD_FONT_B64: bytes come from the PAGE context (base64 string) — used
+// when the worker's own fetch is blocked by site bot-protection (403).
+// ---------------------------------------------------------------------------
+async function handleDownloadFontB64(message) {
+  const { b64, family, format, filename } = message;
+  if (!b64 || typeof b64 !== 'string') return { ok: false, error: '缺少 base64 数据' };
+  let bytes;
+  try {
+    const bin = atob(b64);
+    bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  } catch (err) {
+    return { ok: false, error: 'base64 解码失败：' + err.message };
+  }
+  if (bytes.length < 4) return { ok: false, error: '页面返回的数据为空' };
+  const wantTtf = format === 'ttf';
+  try {
+    return await convertAndSave(bytes, wantTtf, filename || family || 'font');
+  } catch (err) {
+    if (wantTtf) {
+      return { ok: false, error: `转换 TTF 失败：${err.message}（你可改用 WOFF2 下载）` };
+    }
+    return { ok: false, error: `下载失败：${err.message}` };
+  }
+}
+
+// Convert (if WOFF2 -> TTF) and save. Shared by both download paths.
+async function convertAndSave(bytes, wantTtf, base) {
+  let finalBytes = bytes;
+  let ext = detectExtension(bytes);
+  const willConvert = wantTtf && isWoff2(bytes);
+
+  if (willConvert) {
+    // Convert WOFF2 -> TTF INLINE (same service-worker context, no
+    // cross-context ArrayBuffer transport which can lose data).
+    if (typeof self.FontSnatcherWoff2 !== 'undefined' && typeof self.BrotliDecompressBuffer === 'function') {
+      finalBytes = self.FontSnatcherWoff2.woff2ToTtf(bytes, (b) => {
+        const u8 = b instanceof Uint8Array ? b : new Uint8Array(b);
+        return self.BrotliDecompressBuffer(u8);
+      });
+      ext = 'ttf';
+    } else {
+      // Fallback: offscreen document.
+      const woff2Copy = bytes.slice().buffer;
+      await ensureOffscreenDocument();
+      const resp = await withTimeout(
+        chrome.runtime.sendMessage({ type: 'CONVERT_TO_TTF', woff2: woff2Copy }),
+        120000,
+        '转换超时'
+      );
+      if (!resp || !resp.ok) throw new Error((resp && resp.error) || '转换失败');
+      finalBytes = new Uint8Array(resp.ttf);
+      ext = 'ttf';
+    }
+  }
+
+  return await saveDownload(finalBytes, ext, sanitizeFilename(base));
 }
 
 // Save bytes via chrome.downloads.
