@@ -655,28 +655,28 @@
         return;
       }
 
-      // Track progress for this download id if the API supports it.
+      // Track progress: the background (which owns chrome.downloads) pushes
+      // DL_PROGRESS messages tagged with this downloadId.
       const downloadId = resp.downloadId;
-      if (typeof chrome.downloads !== 'undefined' && chrome.downloads.onChanged && downloadId != null) {
-        const onChanged = (delta) => {
-          if (delta.id !== downloadId) return;
-          if (delta.state && delta.state.current === 'in_progress' && delta.totalBytes && delta.totalBytes.current) {
-            const total = delta.totalBytes.current;
-            const recv = delta.receivedBytes ? delta.receivedBytes.current : 0;
-            const pct = Math.min(100, Math.round((recv / total) * 100));
-            setProgress(pct, `${pct}% · ${fmtSize(recv)} / ${fmtSize(total)}`);
-          }
-          if (delta.state && delta.state.current === 'complete') {
+      if (downloadId != null) {
+        const handleProgress = (msg) => {
+          if (!msg || msg.type !== 'DL_PROGRESS' || msg.downloadId !== downloadId) return;
+          const { pct, received, total, state } = msg;
+          if (state === 'in_progress') {
+            setProgress(pct, `${pct}% · ${fmtSize(received)} / ${fmtSize(total)}`);
+          } else if (state === 'complete') {
             setProgress(100, '100% · 完成');
             setMsg('✓ 下载完成');
-            chrome.downloads.onChanged.removeListener(onChanged);
-          }
-          if (delta.state && delta.state.current === 'interrupted') {
+            chrome.runtime.onMessage.removeListener(handleProgress);
+          } else if (state === 'interrupted') {
             setMsg('✗ 下载中断', 'err');
-            chrome.downloads.onChanged.removeListener(onChanged);
+            chrome.runtime.onMessage.removeListener(handleProgress);
           }
         };
-        chrome.downloads.onChanged.addListener(onChanged);
+        chrome.runtime.onMessage.addListener(handleProgress);
+        // Ask the background to stream progress; it broadcasts DL_PROGRESS and
+        // we filter by downloadId (globally unique), so no tabId needed.
+        chrome.runtime.sendMessage({ type: 'WATCH_DOWNLOAD', downloadId }).catch(() => {});
         setMsg('⏳ 下载中…');
       } else {
         setMsg('✓ 已开始下载');

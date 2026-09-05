@@ -14,7 +14,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // chrome.runtime.sendMessage broadcasts to every extension context. The
   // offscreen document's listener answers them; background just ignores them.
   if (message && (message.type === 'CONVERT_TO_TTF' || message.type === 'CONVERT_AND_DOWNLOAD' ||
-      message.type === 'DOWNLOAD_BYTES' || message.type === 'MAKE_BLOB_URL' || message.type === 'REVOKE_BLOB_URL')) {
+      message.type === 'DOWNLOAD_BYTES' || message.type === 'MAKE_BLOB_URL' || message.type === 'REVOKE_BLOB_URL' ||
+      message.type === 'DL_PROGRESS' || message.type === 'PING')) {
     return false;
   }
   (async () => {
@@ -26,6 +27,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return await handleDownloadFont(message);
         case 'GET_FONT_SOURCES':
           return await handleGetFontSources(message);
+        case 'WATCH_DOWNLOAD':
+          // Content script asks to receive progress for a download. Our
+          // global downloads.onChanged listener broadcasts DL_PROGRESS to all
+          // contexts; the sender filters by downloadId. Nothing to store.
+          return { ok: true };
         case 'PICKER_EXITED':
           // informational only (popup may be closed)
           return { ok: true };
@@ -336,16 +342,27 @@ async function handleDownloadFont(message) {
     let ext = detectExtension(bytes);
 
     if (willConvert) {
-      // Ask the offscreen document to convert WOFF2 -> TTF; it returns bytes.
-      await ensureOffscreenDocument();
-      const resp = await chrome.runtime.sendMessage({
-        type: 'CONVERT_TO_TTF',
-        woff2: bytes.buffer,
-      });
-      if (!resp || !resp.ok) {
-        throw new Error((resp && resp.error) || '转换失败');
+      // Convert WOFF2 -> TTF. Primary path: in the offscreen document (its
+      // document context + CSP-with-eval lets wawoff2's embind bind fully).
+      // Fallback: try the SW-inline decoder if it ever becomes available.
+      let ttf = null;
+      const swDecoder = self.__fontSnatcherDecoder;
+      if (swDecoder && typeof swDecoder.decompress === 'function') {
+        try { ttf = swDecoder.decompress(bytes); } catch (_) { ttf = null; }
       }
-      finalBytes = new Uint8Array(resp.ttf);
+      if (!ttf) {
+        await ensureOffscreenDocument();
+        const resp = await withTimeout(
+          chrome.runtime.sendMessage({ type: 'CONVERT_TO_TTF', woff2: bytes.buffer }),
+          60000,
+          '转换超时'
+        );
+        if (!resp || !resp.ok) {
+          throw new Error((resp && resp.error) || '转换失败');
+        }
+        ttf = new Uint8Array(resp.ttf);
+      }
+      finalBytes = ttf instanceof Uint8Array ? ttf : new Uint8Array(ttf);
       ext = 'ttf';
     }
 
@@ -360,15 +377,16 @@ async function handleDownloadFont(message) {
 
 // Save bytes via chrome.downloads.
 // Strategy:
-//  - Small payloads (<= 1.5MB): data URL directly in the SW (no DOM needed).
-//  - Larger payloads: ask the offscreen document to create a blob: URL
-//    (URL.createObjectURL is unavailable in some SW runtimes), then download
-//    that URL here — blob URLs are valid across extension contexts.
+//  - Always try a data URL first (works in the SW, no cross-context risk).
+//  - For very large payloads a data URL may be rejected by the download
+//    manager; fall back to a blob URL created in the offscreen document
+//    (with a timeout so we never hang forever).
 async function saveDownload(bytes, ext, base) {
   const filename = `${base}.${ext}`;
   try {
-    if (bytes.length <= 1.5 * 1024 * 1024) {
-      const dataUrl = bytesToDataUrl(bytes);
+    // Attempt 1: data URL (works in SW without createObjectURL).
+    const dataUrl = bytesToDataUrl(bytes);
+    try {
       const downloadId = await chrome.downloads.download({
         url: dataUrl,
         filename,
@@ -376,15 +394,21 @@ async function saveDownload(bytes, ext, base) {
         conflictAction: 'uniquify',
       });
       return { ok: true, downloadId };
+    } catch (_) {
+      // Large payload or runtime constraint -> fall through to blob URL.
     }
 
-    // Large payload: create blob URL in the offscreen document.
+    // Attempt 2: blob URL via offscreen document (with timeout).
     await ensureOffscreenDocument();
-    const resp = await chrome.runtime.sendMessage({
-      type: 'MAKE_BLOB_URL',
-      bytes: bytes.buffer,
-      mime: 'application/octet-stream',
-    });
+    const resp = await withTimeout(
+      chrome.runtime.sendMessage({
+        type: 'MAKE_BLOB_URL',
+        bytes: bytes.buffer,
+        mime: 'application/octet-stream',
+      }),
+      15000,
+      'offscreen 响应超时'
+    );
     if (!resp || !resp.ok || !resp.blobUrl) {
       throw new Error((resp && resp.error) || '创建下载链接失败');
     }
@@ -404,6 +428,16 @@ async function saveDownload(bytes, ext, base) {
   } catch (err) {
     return { ok: false, error: `保存失败：${err.message}` };
   }
+}
+
+function withTimeout(promise, ms, msg) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(msg || '超时')), ms);
+    promise.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); }
+    );
+  });
 }
 
 function bytesToDataUrl(bytes) {
@@ -428,7 +462,7 @@ async function ensureOffscreenDocument() {
       contextTypes: ['OFFSCREEN_DOCUMENT'],
       documentUrls: [chrome.runtime.getURL('offscreen.html')],
     });
-    if (contexts.length > 0) return true;
+    if (contexts.length > 0) return await waitForOffscreenReady();
   } catch (_) {
     // getContexts may not exist in older runtimes; fall through to create.
   }
@@ -437,7 +471,7 @@ async function ensureOffscreenDocument() {
     offscreenCreation = chrome.offscreen.createDocument({
       url: 'offscreen.html',
       reasons: ['BLOBS'],
-      justification: 'Download font files and convert WOFF2 to TTF using DOM APIs.',
+      justification: 'Convert WOFF2 to TTF and create blob URLs for font downloads.',
     }).catch((err) => {
       offscreenCreation = null;
       // "already exists" is fine — some runtimes keep the doc alive across
@@ -447,8 +481,101 @@ async function ensureOffscreenDocument() {
     });
   }
   await offscreenCreation;
+  if (offscreenCreation !== false) return await waitForOffscreenReady();
   return true;
 }
+
+// The offscreen document registers its message listener only after its JS
+// has loaded. Ping until it responds (bounded) so a conversion message sent
+// right after createDocument never hangs for lack of a listener.
+async function waitForOffscreenReady() {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    try {
+      const resp = await withTimeout(chrome.runtime.sendMessage({ type: 'PING' }), 2000, 'ping timeout');
+      if (resp && resp.ok) return true;
+    } catch (_) { /* not ready yet */ }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error('offscreen 文档未就绪');
+}
+
+// ---------------------------------------------------------------------------
+// WOFF2 -> TTF conversion, INLINE in the service worker.
+//
+// wawoff2 (vendor/wawoff2.js) is a single self-contained Emscripten build
+// (wasm inlined as base64). It is loaded once via importScripts at startup;
+// afterwards `Module.decompress(woff2Bytes)` returns a Uint8Array VIEW over
+// the wasm heap — always `.slice()` it before use.
+// ---------------------------------------------------------------------------
+let woff2ModulePromise = null;
+
+async function initWoff2Decoder() {
+  if (woff2ModulePromise) return woff2ModulePromise;
+  woff2ModulePromise = (async () => {
+    try {
+      importScripts('vendor/wawoff2.js');
+    } catch (e) {
+      try {
+        importScripts(chrome.runtime.getURL('vendor/wawoff2.js'));
+      } catch (e2) {
+        throw new Error('无法加载 wawoff2 解码器：' + e2.message);
+      }
+    }
+    const mod = self.Module || self.wawoff2;
+    if (!mod || typeof mod.decompress !== 'function') {
+      throw new Error('wawoff2 未暴露 decompress() 函数');
+    }
+    if (!mod.calledRun) {
+      await new Promise((resolve, reject) => {
+        mod.onRuntimeInitialized = () => resolve(mod);
+        setTimeout(() => reject(new Error('wawoff2 初始化超时')), 60000);
+      });
+    }
+    // Embind type converters (emscripten::val, std::string...) register
+    // ASYNCHRONOUSLY after runtime init. Probe with a tiny valid call until
+    // the "unbound types" race clears, with a hard timeout.
+    const probe = new Uint8Array([0x77, 0x4f, 0x46, 0x32, 0, 0, 0, 0]);
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      try {
+        mod.decompress(probe); // garbage woff2 -> returns false once bound
+        break; // no throw => types bound
+      } catch (e) {
+        if (!/unbound types/i.test(String(e && e.message))) throw e;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+    if (Date.now() >= deadline) throw new Error('wawoff2 embind 类型绑定超时');
+    return mod;
+  })().catch((err) => {
+    woff2ModulePromise = null; // allow retry
+    throw err;
+  });
+  return woff2ModulePromise;
+}
+
+// Asynchronous conversion: ensures the decoder is initialised (warm path uses
+// the value set at startup; cold path lazily loads it), then converts.
+async function woff2ToTtf(woff2Bytes) {
+  let decoder = self.__fontSnatcherDecoder;
+  if (!decoder || typeof decoder.decompress !== 'function') {
+    decoder = await initWoff2Decoder();
+    self.__fontSnatcherDecoder = decoder;
+  }
+  const out = decoder.decompress(woff2Bytes);
+  if (!out) throw new Error('WOFF2 解码失败');
+  const view = out instanceof Uint8Array ? out : new Uint8Array(out);
+  const copy = view.slice();
+  if (copy.length === 0) throw new Error('解码结果为空');
+  return copy;
+}
+
+// (SW-inline conversion is only a best-effort fallback: the primary path is
+// the offscreen document, whose CSP-with-eval lets wawoff2's embind bind
+// reliably. We deliberately do NOT warm the decoder at startup — initiating
+// importScripts here produces noisy CSP errors in the SW logs and the SW
+// embind binding is unreliable; lazy init keeps console clean.)
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -491,3 +618,32 @@ function sanitizeFilename(name) {
     .trim()
     .slice(0, 120) || 'font';
 }
+
+// ---------------------------------------------------------------------------
+// Download progress streaming.
+// The service worker owns chrome.downloads; content scripts cannot access it.
+// On any change of a download, we broadcast a compact DL_PROGRESS message to
+// every extension context; the content overlay filters by downloadId.
+// ---------------------------------------------------------------------------
+chrome.downloads.onChanged.addListener((delta) => {
+  const d = delta || {};
+  if (d.id == null) return;
+  const state = d.state && d.state.current;
+  let pct = 0;
+  let received = 0;
+  let total = 0;
+  if (d.receivedBytes && d.receivedBytes.current != null) received = d.receivedBytes.current;
+  if (d.totalBytes && d.totalBytes.current != null) total = d.totalBytes.current;
+  if (total > 0) pct = Math.min(100, Math.round((received / total) * 100));
+  // Only broadcast meaningful progress states.
+  if (!state || state === 'in_progress' || state === 'complete' || state === 'interrupted') {
+    chrome.runtime.sendMessage({
+      type: 'DL_PROGRESS',
+      downloadId: d.id,
+      state,
+      pct,
+      received,
+      total,
+    }).catch(() => {});
+  }
+});

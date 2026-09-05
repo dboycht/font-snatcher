@@ -6,10 +6,10 @@
 </head>
 <body>
   <!--
-    Offscreen document: MV3 service workers lack URL.createObjectURL / Blob
-    in some runtimes, so font conversion + downloads run in this hidden page,
-    which has the full DOM API. wawoff2 decoder is loaded here as a classic
-    <script> (reliable, no importScripts needed).
+    Offscreen document: creates blob: URLs for large downloads (the service
+    worker lacks URL.createObjectURL in some runtimes) AND converts WOFF2->TTF
+    using wawoff2 (needs a document context + wasm, both allowed since the
+    manifest CSP includes 'wasm-unsafe-eval').
   -->
   <script src="vendor/wawoff2.js"></script>
   <script src="offscreen.js"></script>
