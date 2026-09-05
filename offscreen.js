@@ -37,8 +37,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         case 'PING':
           return { ok: true };
         case 'CONVERT_TO_TTF': {
-          // { woff2: ArrayBuffer } -> { ok, ttf: ArrayBuffer }
-          const woff2Bytes = new Uint8Array(message.woff2);
+          // { woff2: ArrayBuffer | Uint8Array } -> { ok, ttf: ArrayBuffer }
+          const src = message.woff2;
+          const len = src instanceof ArrayBuffer ? src.byteLength : (src && src.length);
+          if (!src || !len || len < 48) {
+            return { ok: false, error: `WOFF2 数据不完整（仅 ${len || 0} 字节，且校验不通过）` };
+          }
+          const woff2Bytes = src instanceof Uint8Array ? src : new Uint8Array(src);
           const ttf = convertWoff2ToTtf(woff2Bytes);
           if (!ttf || ttf.length === 0) throw new Error('转换结果为空');
           // Copy bytes to an exact-size buffer before structured-clone send.

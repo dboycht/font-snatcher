@@ -342,27 +342,20 @@ async function handleDownloadFont(message) {
     let ext = detectExtension(bytes);
 
     if (willConvert) {
-      // Convert WOFF2 -> TTF. Primary path: in the offscreen document (its
-      // document context + CSP-with-eval lets wawoff2's embind bind fully).
-      // Fallback: try the SW-inline decoder if it ever becomes available.
-      let ttf = null;
-      const swDecoder = self.__fontSnatcherDecoder;
-      if (swDecoder && typeof swDecoder.decompress === 'function') {
-        try { ttf = swDecoder.decompress(bytes); } catch (_) { ttf = null; }
+      // Convert WOFF2 -> TTF via the offscreen document (pure-JS decoder).
+      // Send a COPY of the bytes so message serialization can never detach
+      // or race with our local buffer.
+      const woff2Copy = bytes.slice().buffer;
+      await ensureOffscreenDocument();
+      const resp = await withTimeout(
+        chrome.runtime.sendMessage({ type: 'CONVERT_TO_TTF', woff2: woff2Copy }),
+        120000,
+        '转换超时'
+      );
+      if (!resp || !resp.ok) {
+        throw new Error((resp && resp.error) || '转换失败');
       }
-      if (!ttf) {
-        await ensureOffscreenDocument();
-        const resp = await withTimeout(
-          chrome.runtime.sendMessage({ type: 'CONVERT_TO_TTF', woff2: bytes.buffer }),
-          60000,
-          '转换超时'
-        );
-        if (!resp || !resp.ok) {
-          throw new Error((resp && resp.error) || '转换失败');
-        }
-        ttf = new Uint8Array(resp.ttf);
-      }
-      finalBytes = ttf instanceof Uint8Array ? ttf : new Uint8Array(ttf);
+      finalBytes = new Uint8Array(resp.ttf);
       ext = 'ttf';
     }
 
