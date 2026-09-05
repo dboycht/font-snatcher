@@ -153,6 +153,16 @@
       var locaData;
       if (glyfResult && glyfResult.loca) {
         locaData = encodeLoca(glyfResult.loca, glyfResult.indexFormat);
+        // Synchronise head.indexToLocFormat with the loca encoding we used.
+        var headIdx = built.findIndex(function (b) { return b.tag === 'head'; });
+        if (headIdx >= 0) {
+          var hd = new Uint8Array(built[headIdx].data);
+          // head.indexToLocFormat is a big-endian int16 at offset 50 (high byte
+          // at 50, low byte at 51).
+          hd[50] = 0;
+          hd[51] = glyfResult.indexFormat === 0 ? 0 : 1;
+          built[headIdx].data = hd;
+        }
       } else {
         locaData = dr.bytes(locaEntry.origLength);
       }
@@ -360,7 +370,12 @@
     var gdata = new Uint8Array(total);
     var go = 0;
     for (var gk = 0; gk < glyphParts.length; gk++) { gdata.set(glyphParts[gk], go); go += glyphParts[gk].length; }
-    return { data: gdata, loca: locaArr, indexFormat: indexFormat };
+    // loca indexFormat: offset/2 must fit in uint16 (<=0xFFFF*2). Our crude
+    // per-point encoding makes glyphs larger than the WOFF2 source, so bump to
+    // format 1 (32-bit loca) when needed to avoid overflow.
+    var effIndexFormat = indexFormat;
+    if (effIndexFormat === 0 && offset > 0x20000) effIndexFormat = 1;
+    return { data: gdata, loca: locaArr, indexFormat: effIndexFormat };
   }
 
   function encodeLoca(loca, indexFormat) {
