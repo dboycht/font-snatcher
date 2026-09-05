@@ -1,6 +1,10 @@
 // font-snatcher offscreen document
-// Handles WOFF2 -> TTF conversion and file downloads using the full DOM API
-// (URL.createObjectURL / Blob) that MV3 service workers may lack.
+// Responsibilities:
+//   1. WOFF2 -> TTF conversion using the wawoff2 decoder (wasm).
+//   2. Creating blob: URLs from binary data (URL.createObjectURL lives here,
+//      since service workers may lack it in some runtimes).
+// The actual chrome.downloads call happens in the background service worker
+// (offscreen documents in some Edge versions do not expose chrome.downloads).
 'use strict';
 
 // wawoff2 (Emscripten) exposes the global `Module` once vendor/wawoff2.js
@@ -22,30 +26,39 @@ const decoderReady = new Promise((resolve, reject) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  // This document ONLY handles conversion/download requests that the
-  // background explicitly routes to it. Everything else (DOWNLOAD_FONT,
-  // GET_FONTS, SCAN_FONTS, ...) is addressed to other extension contexts;
-  // return false so we never steal the response channel.
-  if (!message || (message.type !== 'CONVERT_AND_DOWNLOAD' && message.type !== 'DOWNLOAD_BYTES')) {
+  // This document ONLY handles conversion/blob requests routed by the
+  // background. Everything else (DOWNLOAD_FONT, GET_FONTS, SCAN_FONTS, ...)
+  // is addressed to other extension contexts; return false so we never steal
+  // the response channel.
+  if (!message ||
+      (message.type !== 'CONVERT_TO_TTF' &&
+       message.type !== 'MAKE_BLOB_URL' &&
+       message.type !== 'REVOKE_BLOB_URL')) {
     return false;
   }
   (async () => {
     try {
       switch (message.type) {
-        case 'CONVERT_AND_DOWNLOAD': {
-          // { woff2: ArrayBuffer, filename, wantTtf }
+        case 'CONVERT_TO_TTF': {
+          // { woff2: ArrayBuffer } -> { ok, ttf: ArrayBuffer }
           const woff2Bytes = new Uint8Array(message.woff2);
           const module = await decoderReady;
           const out = module.decompress(woff2Bytes);
           if (!out) throw new Error('WOFF2 解码失败');
           const ttfBytes = out instanceof Uint8Array ? out : new Uint8Array(out);
-          return await downloadBytes(ttfBytes, message.filename, 'ttf');
+          if (ttfBytes.length === 0) throw new Error('解码结果为空');
+          return { ok: true, ttf: ttfBytes.buffer };
         }
-        case 'DOWNLOAD_BYTES': {
-          // { bytes: ArrayBuffer, filename }
+        case 'MAKE_BLOB_URL': {
+          // { bytes: ArrayBuffer, mime? } -> { ok, blobUrl }
           const bytes = new Uint8Array(message.bytes);
-          const ext = detectExtension(bytes);
-          return await downloadBytes(bytes, message.filename, ext);
+          const blob = new Blob([bytes], { type: message.mime || 'application/octet-stream' });
+          const blobUrl = URL.createObjectURL(blob);
+          return { ok: true, blobUrl };
+        }
+        case 'REVOKE_BLOB_URL': {
+          if (message.blobUrl) URL.revokeObjectURL(message.blobUrl);
+          return { ok: true };
         }
         /* istanbul ignore next */
         default:
@@ -57,42 +70,3 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   })().then(sendResponse);
   return true; // async
 });
-
-async function downloadBytes(bytes, filename, ext) {
-  const base = sanitizeFilename(filename || 'font');
-  const blob = new Blob([bytes], { type: 'application/octet-stream' });
-  const blobUrl = URL.createObjectURL(blob);
-  try {
-    const downloadId = await chrome.downloads.download({
-      url: blobUrl,
-      filename: `${base}.${ext}`,
-      saveAs: true,
-      conflictAction: 'uniquify',
-    });
-    return { ok: true, downloadId };
-  } finally {
-    // Give the download a moment to start before revoking the URL.
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
-  }
-}
-
-function detectExtension(bytes) {
-  if (bytes.length >= 4 && bytes[0] === 0x77 && bytes[1] === 0x4F &&
-      bytes[2] === 0x46 && bytes[3] === 0x32) return 'woff2';
-  if (bytes.length >= 4 && bytes[0] === 0x77 && bytes[1] === 0x4F &&
-      bytes[2] === 0x46 && bytes[3] === 0x46) return 'woff';
-  if (bytes.length >= 4) {
-    const tag = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
-    if (tag === 'OTTO') return 'otf';
-    if (bytes[0] === 0x00 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x00) return 'ttf';
-  }
-  return 'font';
-}
-
-function sanitizeFilename(name) {
-  return String(name)
-    .replace(/[\\/:*?"<>|\r\n]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 120) || 'font';
-}

@@ -165,6 +165,7 @@ async function downloadFont(font, format, btn) {
       format,
       filename: font.displayName || font.family,
       tabId: currentTabId,
+      sources: font.sources || [],
     });
     if (!resp || !resp.ok) {
       showStatus((resp && resp.error) || '下载失败。', 'error');
@@ -193,6 +194,7 @@ async function downloadAll() {
         format: 'woff2',
         filename: font.displayName || font.family,
         tabId: currentTabId,
+        sources: font.sources || [],
       });
       if (resp && resp.ok) okCount++;
     }

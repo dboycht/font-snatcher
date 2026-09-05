@@ -13,7 +13,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Messages addressed to the offscreen document must NOT be handled here:
   // chrome.runtime.sendMessage broadcasts to every extension context. The
   // offscreen document's listener answers them; background just ignores them.
-  if (message && (message.type === 'CONVERT_AND_DOWNLOAD' || message.type === 'DOWNLOAD_BYTES')) {
+  if (message && (message.type === 'CONVERT_TO_TTF' || message.type === 'CONVERT_AND_DOWNLOAD' ||
+      message.type === 'DOWNLOAD_BYTES' || message.type === 'MAKE_BLOB_URL' || message.type === 'REVOKE_BLOB_URL')) {
     return false;
   }
   (async () => {
@@ -274,63 +275,145 @@ function flattenStrings(value) {
 }
 
 // ---------------------------------------------------------------------------
-// DOWNLOAD_FONT: fetch a font binary and save it to disk.
-// MV3 service workers may lack URL.createObjectURL, so the actual conversion
-// (WOFF2 -> TTF) and the chrome.downloads call happen in an offscreen
-// document, which has the full DOM API.
+// DOWNLOAD_FONT: fetch a font binary, convert WOFF2 -> TTF if requested, and
+// save it with chrome.downloads.
+//
+// Architecture notes:
+//  - MV3 service workers lack URL.createObjectURL in some runtimes, so we
+//    download via a DATA URL (base64) which is fully supported by
+//    chrome.downloads.download in the service worker.
+//  - WOFF2 -> TTF conversion happens in the offscreen document (wawoff2 wasm
+//    loaded there). The offscreen doc returns the TTF bytes; background saves.
+//  - The offscreen document does NOT use chrome.downloads: some Edge versions
+//    do not expose chrome.downloads in offscreen documents.
 // ---------------------------------------------------------------------------
 async function handleDownloadFont(message) {
-  const { url, family, format, filename, ttfUrl } = message;
+  const { url, family, format, filename, ttfUrl, sources } = message;
   if (!url) return { ok: false, error: 'Missing font URL.' };
 
-  // Choose the effective URL:
-  //  - TTF requested and a direct ttf/otf source exists -> use it, no conversion.
-  //  - TTF requested with only woff2 -> fetch woff2 then convert in offscreen.
-  //  - WOFF2 requested -> fetch woff2 directly.
-  let effectiveUrl = url;
-  let needTtfConversion = false;
+  // Candidate URLs in priority order:
+  //  - TTF requested + direct ttf/otf source -> that first.
+  //  - Otherwise the primary URL, then any fallback sources of this family.
+  let candidates = [];
   if (format === 'ttf' && ttfUrl) {
-    effectiveUrl = ttfUrl;
-  } else if (format === 'ttf') {
-    needTtfConversion = true; // we will convert whatever we fetch
+    candidates.push(ttfUrl);
+  }
+  candidates.push(url);
+  if (Array.isArray(sources) && sources.length) {
+    for (const s of sources) {
+      if (s && s.url && !candidates.includes(s.url)) candidates.push(s.url);
+    }
   }
 
-  let bytes;
-  try {
-    // Fetch with credentials so font files behind login still work when the
-    // user is authenticated in the browser profile.
-    const resp = await fetch(effectiveUrl, { credentials: 'include' });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    bytes = new Uint8Array(await resp.arrayBuffer());
-  } catch (err) {
-    return { ok: false, error: `下载字体失败：${err.message}` };
+  // Fetch the first URL that succeeds (handles stale 404 font hashes by
+  // falling back to other variants declared for the same family).
+  let bytes = null;
+  let lastErr = null;
+  for (const candidateUrl of candidates) {
+    try {
+      const resp = await fetch(candidateUrl, { credentials: 'include' });
+      if (!resp.ok) {
+        lastErr = new Error(`HTTP ${resp.status}`);
+        continue;
+      }
+      const buf = await resp.arrayBuffer();
+      if (buf.byteLength === 0) { lastErr = new Error('空文件'); continue; }
+      bytes = new Uint8Array(buf);
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (!bytes) {
+    return { ok: false, error: `下载字体失败：${lastErr ? lastErr.message : '未找到可用来源'}` };
   }
 
   const wantTtf = format === 'ttf';
-  const willConvert = wantTtf && needTtfConversion && isWoff2(bytes);
+  const willConvert = wantTtf && !ttfUrl && isWoff2(bytes);
 
-  // Hand off to the offscreen document: it converts (if needed) and downloads.
   try {
-    const offscreen = await ensureOffscreenDocument();
+    let finalBytes = bytes;
+    let ext = detectExtension(bytes);
+
     if (willConvert) {
-      return await chrome.runtime.sendMessage({
-        type: 'CONVERT_AND_DOWNLOAD',
+      // Ask the offscreen document to convert WOFF2 -> TTF; it returns bytes.
+      await ensureOffscreenDocument();
+      const resp = await chrome.runtime.sendMessage({
+        type: 'CONVERT_TO_TTF',
         woff2: bytes.buffer,
-        filename: sanitizeFilename(filename || family || 'font'),
       });
+      if (!resp || !resp.ok) {
+        throw new Error((resp && resp.error) || '转换失败');
+      }
+      finalBytes = new Uint8Array(resp.ttf);
+      ext = 'ttf';
     }
-    // Direct download (woff2 / ttf / otf / woff as-is).
-    return await chrome.runtime.sendMessage({
-      type: 'DOWNLOAD_BYTES',
-      bytes: bytes.buffer,
-      filename: sanitizeFilename(filename || family || 'font'),
-    });
+
+    return await saveDownload(finalBytes, ext, sanitizeFilename(filename || family || 'font'));
   } catch (err) {
     if (willConvert) {
       return { ok: false, error: `转换 TTF 失败：${err.message}（你可改用 WOFF2 下载）` };
     }
     return { ok: false, error: `下载失败：${err.message}` };
   }
+}
+
+// Save bytes via chrome.downloads.
+// Strategy:
+//  - Small payloads (<= 1.5MB): data URL directly in the SW (no DOM needed).
+//  - Larger payloads: ask the offscreen document to create a blob: URL
+//    (URL.createObjectURL is unavailable in some SW runtimes), then download
+//    that URL here — blob URLs are valid across extension contexts.
+async function saveDownload(bytes, ext, base) {
+  const filename = `${base}.${ext}`;
+  try {
+    if (bytes.length <= 1.5 * 1024 * 1024) {
+      const dataUrl = bytesToDataUrl(bytes);
+      const downloadId = await chrome.downloads.download({
+        url: dataUrl,
+        filename,
+        saveAs: true,
+        conflictAction: 'uniquify',
+      });
+      return { ok: true, downloadId };
+    }
+
+    // Large payload: create blob URL in the offscreen document.
+    await ensureOffscreenDocument();
+    const resp = await chrome.runtime.sendMessage({
+      type: 'MAKE_BLOB_URL',
+      bytes: bytes.buffer,
+      mime: 'application/octet-stream',
+    });
+    if (!resp || !resp.ok || !resp.blobUrl) {
+      throw new Error((resp && resp.error) || '创建下载链接失败');
+    }
+    const blobUrl = resp.blobUrl;
+    try {
+      const downloadId = await chrome.downloads.download({
+        url: blobUrl,
+        filename,
+        saveAs: true,
+        conflictAction: 'uniquify',
+      });
+      return { ok: true, downloadId };
+    } finally {
+      // Revoke after the download read the bytes.
+      setTimeout(() => chrome.runtime.sendMessage({ type: 'REVOKE_BLOB_URL', blobUrl }).catch(() => {}), 120000);
+    }
+  } catch (err) {
+    return { ok: false, error: `保存失败：${err.message}` };
+  }
+}
+
+function bytesToDataUrl(bytes) {
+  // Build base64 in chunks to avoid call-stack limits on large buffers.
+  const CHUNK = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return 'data:application/octet-stream;base64,' + btoa(binary);
 }
 
 // ---------------------------------------------------------------------------

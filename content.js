@@ -604,6 +604,7 @@
         family,
         format,
         filename: family,
+        sources,
       });
       if (msg) {
         msg.textContent = resp && resp.ok ? '✓ 已开始下载' : `✗ ${(resp && resp.error) || '失败'}`;
