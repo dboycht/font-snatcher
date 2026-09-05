@@ -502,6 +502,13 @@
                cursor:pointer;color:#57606a;line-height:1;padding:2px 4px;}
         .no-src{color:#d93025;font-size:12px;margin-top:8px;}
         .ok{color:#188038;font-size:12px;margin-top:8px;}
+        .err{color:#d93025;font-size:12px;margin-top:8px;}
+        .prog{display:none;margin-top:10px;}
+        .prog.show{display:block;}
+        .prog-bar{height:6px;background:#e5e7eb;border-radius:3px;overflow:hidden;}
+        .prog-fill{height:100%;width:0%;background:linear-gradient(90deg,#1a73e8,#188038);
+                   border-radius:3px;transition:width .2s ease;}
+        .prog-label{font-size:11px;color:#6e7781;margin-top:4px;text-align:right;}
       `;
       shadowRoot.appendChild(style);
       document.documentElement.appendChild(overlayEl);
@@ -554,7 +561,19 @@
       btns.appendChild(woff2Btn);
       btns.appendChild(ttfBtn);
       panel.appendChild(btns);
-      panel.appendChild(document.createElement('div')).id = 'fs-dl-msg';
+
+      // Progress bar area (shown while a download is in progress).
+      const prog = document.createElement('div');
+      prog.className = 'prog';
+      prog.innerHTML = `
+        <div class="prog-bar"><div class="prog-fill"></div></div>
+        <div class="prog-label"></div>`;
+      panel.appendChild(prog);
+
+      const msg = document.createElement('div');
+      msg.className = 'ok';
+      msg.textContent = '';
+      panel.appendChild(msg);
     } else {
       const ns = document.createElement('div');
       ns.className = 'no-src';
@@ -591,12 +610,35 @@
 
   async function downloadFromOverlay(family, sources, format, btn) {
     if (btn) btn.disabled = true;
-    const msg = shadowRoot && shadowRoot.querySelector('#fs-dl-msg');
+    const panel = shadowRoot && shadowRoot.querySelector('.panel');
+    const msgEl = panel && panel.querySelector('.ok');
+    const progEl = panel && panel.querySelector('.prog');
+    const fillEl = panel && progEl.querySelector('.prog-fill');
+    const labelEl = panel && progEl.querySelector('.prog-label');
+
+    const setMsg = (text, kind) => {
+      if (!msgEl) return;
+      msgEl.textContent = text;
+      msgEl.className = 'ok' + (kind === 'err' ? ' err' : '');
+    };
+    const setProgress = (pct, label) => {
+      if (!progEl) return;
+      progEl.classList.add('show');
+      if (fillEl) fillEl.style.width = pct + '%';
+      if (labelEl) labelEl.textContent = label || (pct + '%');
+    };
+
     try {
       const ttfSrc = sources.find(
         (s) => /\.(ttf|otf)(?:$|\?)/i.test(s.url) || (s.format && /^(ttf|otf)$/i.test(s.format))
       );
       const primary = ttfSrc || sources[0];
+
+      // Show "starting" state; conversion (WOFF2->TTF) can take a while before
+      // the download id exists, so label it as converting/preparing.
+      setMsg(format === 'ttf' ? '🔄 转换中…' : '🔄 准备中…');
+      setProgress(5, '准备中…');
+
       const resp = await chrome.runtime.sendMessage({
         type: 'DOWNLOAD_FONT',
         url: primary.url,
@@ -606,14 +648,50 @@
         filename: family,
         sources,
       });
-      if (msg) {
-        msg.textContent = resp && resp.ok ? '✓ 已开始下载' : `✗ ${(resp && resp.error) || '失败'}`;
-        msg.style.color = resp && resp.ok ? '#188038' : '#d93025';
+
+      if (!resp || !resp.ok) {
+        setMsg(`✗ ${(resp && resp.error) || '失败'}`, 'err');
+        if (btn) setTimeout(() => { btn.disabled = false; }, 1500);
+        return;
       }
-      if (btn) setTimeout(() => { btn.disabled = false; }, 1200);
+
+      // Track progress for this download id if the API supports it.
+      const downloadId = resp.downloadId;
+      if (typeof chrome.downloads !== 'undefined' && chrome.downloads.onChanged && downloadId != null) {
+        const onChanged = (delta) => {
+          if (delta.id !== downloadId) return;
+          if (delta.state && delta.state.current === 'in_progress' && delta.totalBytes && delta.totalBytes.current) {
+            const total = delta.totalBytes.current;
+            const recv = delta.receivedBytes ? delta.receivedBytes.current : 0;
+            const pct = Math.min(100, Math.round((recv / total) * 100));
+            setProgress(pct, `${pct}% · ${fmtSize(recv)} / ${fmtSize(total)}`);
+          }
+          if (delta.state && delta.state.current === 'complete') {
+            setProgress(100, '100% · 完成');
+            setMsg('✓ 下载完成');
+            chrome.downloads.onChanged.removeListener(onChanged);
+          }
+          if (delta.state && delta.state.current === 'interrupted') {
+            setMsg('✗ 下载中断', 'err');
+            chrome.downloads.onChanged.removeListener(onChanged);
+          }
+        };
+        chrome.downloads.onChanged.addListener(onChanged);
+        setMsg('⏳ 下载中…');
+      } else {
+        setMsg('✓ 已开始下载');
+      }
+      if (btn) setTimeout(() => { btn.disabled = false; }, 1500);
     } catch (err) {
-      if (msg) { msg.textContent = '✗ ' + err.message; msg.style.color = '#d93025'; }
+      setMsg('✗ ' + err.message, 'err');
       if (btn) btn.disabled = false;
     }
+  }
+
+  function fmtSize(n) {
+    if (!n) return '0 B';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MB';
   }
 })();

@@ -45,7 +45,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const module = await decoderReady;
           const out = module.decompress(woff2Bytes);
           if (!out) throw new Error('WOFF2 解码失败');
-          const ttfBytes = out instanceof Uint8Array ? out : new Uint8Array(out);
+          // CRITICAL: embind returns a VIEW over the wasm heap; its .buffer is
+          // the whole wasm memory, not our data. Copy the exact bytes first so
+          // we only send the font, not the entire heap (would corrupt/fail
+          // the download).
+          const view = out instanceof Uint8Array ? out : new Uint8Array(out);
+          const ttfBytes = view.slice(); // fresh, exact-size copy
           if (ttfBytes.length === 0) throw new Error('解码结果为空');
           return { ok: true, ttf: ttfBytes.buffer };
         }
