@@ -1,56 +1,24 @@
 // font-snatcher offscreen document
 // Responsibilities:
-//   1. WOFF2 -> TTF conversion using wawoff2 (needs a document context: the
-//      service worker's embind binding does not complete reliably, and the
-//      extension-page CSP now allows wasm + eval).
-//   2. Create blob: URLs from binary data (URL.createObjectURL lives here,
-//      since service workers may lack it in some runtimes).
-// The actual chrome.downloads call happens in the background service worker
-// (offscreen docs in some Edge versions don't expose chrome.downloads).
+//   1. WOFF2 -> TTF conversion using pure-JS decoding (foliojs brotli bundle +
+//      our woff2dec). No wasm/eval, works under MV3 extension-page CSP.
+//   2. Create blob: URLs for large binary downloads.
+// chrome.downloads stays in the background service worker.
 'use strict';
 
-// wawoff2 (Emscripten) exposes the global `Module` once vendor/wawoff2.js
-// has been loaded via the <script> tag in offscreen.html.
-const decoderReady = new Promise((resolve, reject) => {
-  const tryResolve = () => {
-    if (Module && typeof Module.decompress === 'function') {
-      if (Module.calledRun) {
-        // Embind types register asynchronously after run; probe until bound.
-        const probe = new Uint8Array([0x77, 0x4f, 0x46, 0x32, 0, 0, 0, 0]);
-        const deadline = Date.now() + 15000;
-        const poll = () => {
-          try { Module.decompress(probe); return resolve(Module); }
-          catch (e) {
-            if (!/unbound types/i.test(String(e && e.message))) return reject(new Error('wawoff2 初始化失败：' + (e && e.message)));
-            if (Date.now() < deadline) setTimeout(poll, 100);
-            else reject(new Error('wawoff2 初始化超时'));
-          }
-        };
-        return poll();
-      }
-      Module.onRuntimeInitialized = () => {
-        const probe = new Uint8Array([0x77, 0x4f, 0x46, 0x32, 0, 0, 0, 0]);
-        const deadline = Date.now() + 15000;
-        const poll = () => {
-          try { Module.decompress(probe); return resolve(Module); }
-          catch (e) {
-            if (!/unbound types/i.test(String(e && e.message))) return reject(new Error('wawoff2 初始化失败：' + (e && e.message)));
-            if (Date.now() < deadline) setTimeout(poll, 100);
-            else reject(new Error('wawoff2 初始化超时'));
-          }
-        };
-        poll();
-      };
-      setTimeout(() => {
-        if (Module && !Module.calledRun) reject(new Error('wawoff2 初始化超时'));
-      }, 60000);
-      return;
-    }
-    // The script may still be loading; retry shortly.
-    setTimeout(tryResolve, 50);
-  };
-  tryResolve();
-});
+// woff2dec exposes global.FontSnatcherWoff2; brotli bundle exposes
+// global.BrotliDecompressBuffer. Both loaded via <script> in offscreen.html.
+function convertWoff2ToTtf(woff2Bytes) {
+  const api = globalThis.FontSnatcherWoff2;
+  const brotli = globalThis.BrotliDecompressBuffer;
+  if (!api || !brotli) throw new Error('解码器未加载（woff2dec/brotli 缺失）');
+  const ttf = api.woff2ToTtf(woff2Bytes, (buf) => {
+    const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    // BrotliDecompressBuffer accepts Uint8Array (or Buffer); pass bytes only.
+    return brotli(b.subarray ? b : b);
+  });
+  return ttf;
+}
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // This document ONLY handles conversion/blob requests routed by the
@@ -71,15 +39,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         case 'CONVERT_TO_TTF': {
           // { woff2: ArrayBuffer } -> { ok, ttf: ArrayBuffer }
           const woff2Bytes = new Uint8Array(message.woff2);
-          const module = await decoderReady;
-          const out = module.decompress(woff2Bytes);
-          if (!out) throw new Error('WOFF2 解码失败');
-          // embind returns a VIEW over the wasm heap; .buffer is the whole
-          // heap. slice() to get exact bytes before sending to background.
-          const view = out instanceof Uint8Array ? out : new Uint8Array(out);
-          const ttfBytes = view.slice();
-          if (ttfBytes.length === 0) throw new Error('解码结果为空');
-          return { ok: true, ttf: ttfBytes.buffer };
+          const ttf = convertWoff2ToTtf(woff2Bytes);
+          if (!ttf || ttf.length === 0) throw new Error('转换结果为空');
+          // Copy bytes to an exact-size buffer before structured-clone send.
+          return { ok: true, ttf: ttf.buffer };
         }
         case 'MAKE_BLOB_URL': {
           // { bytes: ArrayBuffer, mime? } -> { ok, blobUrl }
@@ -94,7 +57,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
         /* istanbul ignore next */
         default:
-          return { ok: false, error: `Unknown offscreen message: ${message.type}` };
+          return { ok: false, error: 'Unknown offscreen message' };
       }
     } catch (err) {
       return { ok: false, error: String(err && err.message ? err.message : err) };

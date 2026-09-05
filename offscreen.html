@@ -6,12 +6,12 @@
 </head>
 <body>
   <!--
-    Offscreen document: creates blob: URLs for large downloads (the service
-    worker lacks URL.createObjectURL in some runtimes) AND converts WOFF2->TTF
-    using wawoff2 (needs a document context + wasm, both allowed since the
-    manifest CSP includes 'wasm-unsafe-eval').
+    Offscreen document: converts WOFF2 -> TTF and creates blob: URLs for large
+    downloads. Pure-JS decoding (brotli-bundle + woff2dec), no wasm/eval, so
+    it works under the MV3 default extension-page CSP (script-src 'self').
   -->
-  <script src="vendor/wawoff2.js"></script>
+  <script src="vendor/brotli-bundle.js"></script>
+  <script src="vendor/woff2dec.js"></script>
   <script src="offscreen.js"></script>
 </body>
 </html>
