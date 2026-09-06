@@ -507,12 +507,6 @@
                    font:13px/1 system-ui,sans-serif;}
         .btn-local:hover{background:#eef1f4;}
         .btn-local:disabled{opacity:.6;cursor:default;}
-        .cmd{width:100%;box-sizing:border-box;margin-top:8px;font:11px/1.4 Consolas,monospace;
-             border:1px solid #d0d7de;border-radius:6px;padding:6px;color:#24292f;
-             word-break:break-all;}
-        .btn-copy{margin-top:6px;width:100%;border:none;background:#6e7781;color:#fff;
-                  border-radius:6px;padding:7px 0;cursor:pointer;font:13px/1 system-ui,sans-serif;}
-        .btn-copy:hover{background:#57606a;}
         .info{color:#57606a;font-size:12px;margin-top:8px;white-space:pre-line;}
         .ok{color:#188038;font-size:12px;margin-top:8px;}
         .err{color:#d93025;font-size:12px;margin-top:8px;}
@@ -612,12 +606,21 @@
             locBtn.disabled = false;
             return;
           }
-          // Show info + command + copy button.
-          localMsg.textContent = resp.hint || '';
-          localMsg.className = 'info';
-          cmdBox.textContent = resp.command;
-          copyBtn.hidden = false;
-          locBtn.textContent = '✅ ' + resp.name + '（' + resp.file + '）';
+          // Success: download the .cmd script directly — user double-clicks
+          // it, no terminal skills needed.
+          const blob = new Blob([resp.script], { type: 'text/plain;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = resp.scriptName || '导出字体.cmd';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 30000);
+          localMsg.textContent =
+            `✅ 已下载「${a.download}」\n双击运行它，字体就会复制到桌面（或下载文件夹）。`;
+          localMsg.className = 'ok';
+          locBtn.textContent = '✅ 已生成导出文件';
         } catch (err) {
           localMsg.textContent = '✗ ' + err.message;
           localMsg.className = 'err';
@@ -627,33 +630,11 @@
       });
       panel.appendChild(locBtn);
 
-      // Message + command area (created now, filled on click).
+      // Message area (simple, no terminal UI).
       const localMsg = document.createElement('div');
       localMsg.className = 'info';
       localMsg.textContent = '';
       panel.appendChild(localMsg);
-
-      const cmdBox = document.createElement('textarea');
-      cmdBox.className = 'cmd';
-      cmdBox.readOnly = true;
-      cmdBox.rows = 4;
-      panel.appendChild(cmdBox);
-
-      const copyBtn = document.createElement('button');
-      copyBtn.className = 'btn btn-copy';
-      copyBtn.textContent = '📋 复制命令';
-      copyBtn.hidden = true;
-      copyBtn.addEventListener('click', async () => {
-        try {
-          await navigator.clipboard.writeText(cmdBox.value);
-          copyBtn.textContent = '✓ 已复制，打开 PowerShell 粘贴运行';
-        } catch (_) {
-          cmdBox.select();
-          document.execCommand('copy');
-          copyBtn.textContent = '✓ 已复制，打开 PowerShell 粘贴运行';
-        }
-      });
-      panel.appendChild(copyBtn);
     }
 
     const close = document.createElement('button');

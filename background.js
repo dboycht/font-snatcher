@@ -12247,21 +12247,35 @@ async function handleExportLocalFont(message) {
     return { ok: false, error: `「${info.name}」暂不支持自动导出（文件：${info.file}）。请手动从系统字体目录复制。` };
   }
 
-  // PowerShell command that copies the font to the user's Desktop + Downloads.
-  const ps = [
-    '$src = ' + JSON.stringify(sourcePath),
-    '$dest1 = [Environment]::GetFolderPath("Desktop")',
-    '$dest2 = [Environment]::GetFolderPath("UserProfile") + "\\Downloads"',
-    'if (Test-Path $src) { Copy-Item -LiteralPath $src -Destination (Join-Path $dest1 ' + JSON.stringify(info.file) + ') -Force; Write-Host "已复制到桌面: ' + info.file + '" } else { Write-Host "未找到系统字体文件: ' + sourcePath + '" }',
-  ].join('; ');
+  // Build a .cmd script the user can DOUBLE-CLICK (no terminal needed).
+  // The script copies the font file to Desktop and Downloads, then waits so
+  // the window stays visible to show the result.
+  const cmd = [
+    '@echo off',
+    'chcp 65001 >nul',
+    'set "SRC=' + sourcePath + '"',
+    'set "FONT=' + info.file + '"',
+    'if exist "%SRC%" (',
+    '  copy /y "%SRC%" "%USERPROFILE%\\Desktop\\%FONT%" >nul',
+    '  echo 成功！字体已复制到桌面：%FONT%',
+    '  copy /y "%SRC%" "%USERPROFILE%\\Downloads\\%FONT%" >nul 2>nul',
+    ') else (',
+    '  echo 没有找到系统字体文件：%SRC%',
+    '  echo 该字体可能在别的目录，可手动去 C:\\Windows\\Fonts 查找。',
+    ')',
+    'echo.',
+    'echo 按任意键关闭本窗口...',
+    'pause >nul',
+  ].join('\r\n') + '\r\n';
 
   return {
     ok: true,
     name: info.name,
     file: info.file,
     sourcePath,
-    command: ps,
-    hint: `网页使用了系统字体「${info.name}」，它不在网页上、无法直接下载。\n已生成复制命令：将字体文件复制到桌面/下载目录。`,
+    script: cmd,
+    scriptName: '导出-' + info.name.replace(/[\\/:*?"<>|\r\n]+/g, '').slice(0, 20) + '.cmd',
+    hint: `网页用的是系统字体「${info.name}」（不是网页上的文件）。\n即将下载一个「导出.cmd」小文件，双击运行它，字体就会自动复制到桌面。`,
   };
 }
 
