@@ -507,6 +507,9 @@
                    font:13px/1 system-ui,sans-serif;}
         .btn-local:hover{background:#eef1f4;}
         .btn-local:disabled{opacity:.6;cursor:default;}
+        .path{font:12px/1.5 Consolas,monospace;background:#f6f8fa;border:1px solid #d0d7de;
+              border-radius:6px;padding:6px 8px;margin-top:8px;color:#0969da;word-break:break-all;
+              user-select:all;}
         .info{color:#57606a;font-size:12px;margin-top:8px;white-space:pre-line;}
         .ok{color:#188038;font-size:12px;margin-top:8px;}
         .err{color:#d93025;font-size:12px;margin-top:8px;}
@@ -590,7 +593,7 @@
       // "Export local font" button for system fonts.
       const locBtn = document.createElement('button');
       locBtn.className = 'btn btn-local';
-      locBtn.textContent = '📁 导出本地字体文件';
+      locBtn.textContent = '📁 获取本地字体文件';
       locBtn.addEventListener('click', async () => {
         locBtn.disabled = true;
         locBtn.textContent = '查询中…';
@@ -600,35 +603,57 @@
             families: familyList,
           });
           if (!resp || !resp.ok) {
-            localMsg.textContent = '✗ ' + ((resp && resp.error) || '无法导出');
+            localMsg.textContent = '✗ ' + ((resp && resp.error) || '无法获取');
             localMsg.className = 'err';
-            locBtn.textContent = '📁 导出本地字体文件';
+            locBtn.textContent = '📁 获取本地字体文件';
             locBtn.disabled = false;
             return;
           }
-          // Success: download the .cmd script directly — user double-clicks
-          // it, no terminal skills needed.
-          const blob = new Blob([resp.script], { type: 'text/plain;charset=utf-8' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = resp.scriptName || '导出字体.cmd';
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          setTimeout(() => URL.revokeObjectURL(url), 30000);
-          localMsg.textContent =
-            `✅ 已下载「${a.download}」\n双击运行它，字体就会复制到桌面（或下载文件夹）。`;
+          // Show the exact font path + copy it to the clipboard. The font is
+          // already on this computer; the user pastes the path into Explorer's
+          // address bar and gets to the file directly. No downloads involved.
+          const pathLine = resp.sourcePath + `\n（即本地文件：${resp.name} → ${resp.file}）`;
+          let copied = false;
+          try {
+            await navigator.clipboard.writeText(resp.sourcePath);
+            copied = true;
+          } catch (_) { /* clipboard blocked; still show path */ }
+          pathText.textContent = resp.sourcePath;
+          pathText.style.display = 'block';
+          localMsg.textContent = copied
+            ? `✅ 已复制字体位置到剪贴板！\n\n打开「此电脑」→ 顶部地址栏 → 粘贴回车，即可看到：\n${resp.file}\n右键复制到桌面即可使用。`
+            : `字体位置：\n${resp.sourcePath}\n\n请手动复制上面的路径，打开「此电脑」在地址栏粘贴回车即可找到文件。`;
           localMsg.className = 'ok';
-          locBtn.textContent = '✅ 已生成导出文件';
+          locBtn.textContent = '✅ ' + resp.name + ' → ' + resp.file;
+          locBtn.disabled = false;
+          // Also offer to download a tiny .txt with the same info (files safe
+          // to download; no browser block) as a backup note.
+          try {
+            const note = resp.sourcePath + '\n\n字体：' + resp.name + '（' + resp.file + '）\n复制上面路径到「此电脑」地址栏回车即可找到该字体文件。';
+            const dl = await chrome.runtime.sendMessage({
+              type: 'DOWNLOAD_TEXT',
+              text: note,
+              filename: '字体位置-' + resp.name.replace(/[\\/:*?"<>|]/g, '').slice(0, 12) + '.txt',
+            });
+            if (dl && dl.ok) {
+              localMsg.textContent += '\n\n📄 另下载了一份「.txt」说明，内容同上（双击打开可查看）。';
+            }
+          } catch (_) { /* optional */ }
         } catch (err) {
           localMsg.textContent = '✗ ' + err.message;
           localMsg.className = 'err';
-          locBtn.textContent = '📁 导出本地字体文件';
+          locBtn.textContent = '📁 获取本地字体文件';
           locBtn.disabled = false;
         }
       });
       panel.appendChild(locBtn);
+
+      // Path display area (simple).
+      const pathText = document.createElement('div');
+      pathText.className = 'path';
+      pathText.style.display = 'none';
+      pathText.textContent = '';
+      panel.appendChild(pathText);
 
       // Message area (simple, no terminal UI).
       const localMsg = document.createElement('div');

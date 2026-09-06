@@ -11797,6 +11797,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           // global downloads.onChanged listener broadcasts DL_PROGRESS to all
           // contexts; the sender filters by downloadId. Nothing to store.
           return { ok: true };
+        case 'DOWNLOAD_TEXT':
+          // Download a small text/script file (e.g. the export .cmd) via the
+          // worker's chrome.downloads — content scripts cannot always trigger
+          // downloads reliably.
+          return await handleDownloadText(message);
         case 'PICKER_EXITED':
           // informational only (popup may be closed)
           return { ok: true };
@@ -12331,6 +12336,26 @@ async function saveDownload(bytes, ext, base) {
     }
   } catch (err) {
     return { ok: false, error: `保存失败：${err.message}` };
+  }
+}
+
+// Download a small UTF-8 text/script file (e.g. the export .cmd) via the
+// worker's chrome.downloads. content scripts can't always trigger a download.
+async function handleDownloadText(message) {
+  const { text, filename } = message;
+  if (typeof text !== 'string' || !text) return { ok: false, error: '缺少内容' };
+  try {
+    const b64 = btoa(unescape(encodeURIComponent(text))); // UTF-8 safe base64
+    const url = 'data:text/plain;charset=utf-8;base64,' + b64;
+    const downloadId = await chrome.downloads.download({
+      url,
+      filename: sanitizeFilename(filename || 'export.cmd'),
+      saveAs: true,
+      conflictAction: 'uniquify',
+    });
+    return { ok: true, downloadId };
+  } catch (err) {
+    return { ok: false, error: '下载失败：' + err.message };
   }
 }
 
