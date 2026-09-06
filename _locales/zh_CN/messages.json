@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "字体狩猎者 Font Snatcher",
+    "description": "扩展名称（简体中文）"
+  },
+  "extDesc": {
+    "message": "一键识别网页使用的任意字体，并下载为可直接安装的字体文件（WOFF2 / TTF）。",
+    "description": "商店列表使用的简短描述"
+  }
+}

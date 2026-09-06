@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "Font Snatcher",
+    "description": "Extension name (English)"
+  },
+  "extDesc": {
+    "message": "Detects fonts used on a webpage and downloads them as ready-to-use font files (WOFF2/TTF).",
+    "description": "Short description shown in stores"
+  }
+}

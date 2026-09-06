@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Font Snatcher",
+  "name": "__MSG_extName__",
+  "default_locale": "en",
   "version": "1.0.1",
-  "description": "Detects fonts used on a webpage and downloads them as ready-to-use font files (WOFF2/TTF).",
+  "description": "__MSG_extDesc__",
   "minimum_chrome_version": "109",
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"

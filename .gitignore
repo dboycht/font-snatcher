@@ -1,8 +1,13 @@
-﻿data/
+﻿# ---- Runtime / user data (never committed) ----
+data/
 *.log
 *.tmp
+
+# ---- OS / editor junk ----
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ---- Packaging artifacts ----
 *.crx
 *.zip
