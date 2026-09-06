@@ -12064,7 +12064,7 @@ function flattenStrings(value) {
 //    do not expose chrome.downloads in offscreen documents.
 // ---------------------------------------------------------------------------
 async function handleDownloadFont(message) {
-  const { url, family, format, filename, ttfUrl, sources } = message;
+  const { url, family, format, filename, ttfUrl, sources, pageUrl } = message;
   if (!url) return { ok: false, error: 'Missing font URL.' };
 
   // Candidate URLs in priority order:
@@ -12081,13 +12081,17 @@ async function handleDownloadFont(message) {
     }
   }
 
+  // Some CDNs (AO.aliyun OSS etc.) enforce Referer anti-hotlinking; send the
+  // page URL so the font can be fetched like the page itself would.
+  const headers = { 'Referer': pageUrl || 'https://www.aplaybox.com/' };
+
   // Fetch the first URL that succeeds (handles stale 404 font hashes by
   // falling back to other variants declared for the same family).
   let bytes = null;
   let lastErr = null;
   for (const candidateUrl of candidates) {
     try {
-      const resp = await fetch(candidateUrl, { credentials: 'include' });
+      const resp = await fetch(candidateUrl, { credentials: 'include', headers });
       if (!resp.ok) {
         lastErr = new Error(`HTTP ${resp.status}`);
         continue;

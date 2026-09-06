@@ -587,13 +587,14 @@
     } else {
       const ns = document.createElement('div');
       ns.className = 'no-src';
-      ns.textContent = '这是系统字体，不在网页上。可尝试将其本地字体文件导出。';
+      ns.textContent = '这是系统字体，不在网页上（无法下载）。可点击下方查看它的本地名称。';
       panel.appendChild(ns);
 
-      // "Export local font" button for system fonts.
+      // Simple: show the local font's name/file on click. No downloads,
+      // no clipboard, nothing risky.
       const locBtn = document.createElement('button');
       locBtn.className = 'btn btn-local';
-      locBtn.textContent = '📁 获取本地字体文件';
+      locBtn.textContent = 'ℹ️ 查看这个字体';
       locBtn.addEventListener('click', async () => {
         locBtn.disabled = true;
         locBtn.textContent = '查询中…';
@@ -603,59 +604,27 @@
             families: familyList,
           });
           if (!resp || !resp.ok) {
-            localMsg.textContent = '✗ ' + ((resp && resp.error) || '无法获取');
+            localMsg.textContent = '✗ ' + ((resp && resp.error) || '未识别');
             localMsg.className = 'err';
-            locBtn.textContent = '📁 获取本地字体文件';
+            locBtn.textContent = 'ℹ️ 查看这个字体';
             locBtn.disabled = false;
             return;
           }
-          // Show the exact font path + copy it to the clipboard. The font is
-          // already on this computer; the user pastes the path into Explorer's
-          // address bar and gets to the file directly. No downloads involved.
-          const pathLine = resp.sourcePath + `\n（即本地文件：${resp.name} → ${resp.file}）`;
-          let copied = false;
-          try {
-            await navigator.clipboard.writeText(resp.sourcePath);
-            copied = true;
-          } catch (_) { /* clipboard blocked; still show path */ }
-          pathText.textContent = resp.sourcePath;
-          pathText.style.display = 'block';
-          localMsg.textContent = copied
-            ? `✅ 已复制字体位置到剪贴板！\n\n打开「此电脑」→ 顶部地址栏 → 粘贴回车，即可看到：\n${resp.file}\n右键复制到桌面即可使用。`
-            : `字体位置：\n${resp.sourcePath}\n\n请手动复制上面的路径，打开「此电脑」在地址栏粘贴回车即可找到文件。`;
+          localMsg.textContent =
+            `✅ 本地字体：${resp.name}\n文件：${resp.file}\n位置：${resp.sourcePath}`;
           localMsg.className = 'ok';
-          locBtn.textContent = '✅ ' + resp.name + ' → ' + resp.file;
+          locBtn.textContent = '✅ 已显示';
           locBtn.disabled = false;
-          // Also offer to download a tiny .txt with the same info (files safe
-          // to download; no browser block) as a backup note.
-          try {
-            const note = resp.sourcePath + '\n\n字体：' + resp.name + '（' + resp.file + '）\n复制上面路径到「此电脑」地址栏回车即可找到该字体文件。';
-            const dl = await chrome.runtime.sendMessage({
-              type: 'DOWNLOAD_TEXT',
-              text: note,
-              filename: '字体位置-' + resp.name.replace(/[\\/:*?"<>|]/g, '').slice(0, 12) + '.txt',
-            });
-            if (dl && dl.ok) {
-              localMsg.textContent += '\n\n📄 另下载了一份「.txt」说明，内容同上（双击打开可查看）。';
-            }
-          } catch (_) { /* optional */ }
         } catch (err) {
           localMsg.textContent = '✗ ' + err.message;
           localMsg.className = 'err';
-          locBtn.textContent = '📁 获取本地字体文件';
+          locBtn.textContent = 'ℹ️ 查看这个字体';
           locBtn.disabled = false;
         }
       });
       panel.appendChild(locBtn);
 
-      // Path display area (simple).
-      const pathText = document.createElement('div');
-      pathText.className = 'path';
-      pathText.style.display = 'none';
-      pathText.textContent = '';
-      panel.appendChild(pathText);
-
-      // Message area (simple, no terminal UI).
+      // Message area (simple).
       const localMsg = document.createElement('div');
       localMsg.className = 'info';
       localMsg.textContent = '';
@@ -777,6 +746,7 @@
         format,
         filename: family,
         sources,
+        pageUrl: location.href,
       });
 
       if (!resp || !resp.ok) {
