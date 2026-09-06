@@ -468,15 +468,16 @@
 
     if (sources.length === 0) {
       // Still no URL — but we can still show family info without buttons.
-      showOverlay(el, resolvedFamily, st, sources, true);
+      showOverlay(el, resolvedFamily, st, sources, true, families);
       return;
     }
-    showOverlay(el, resolvedFamily, st, sources, false);
+    showOverlay(el, resolvedFamily, st, sources, false, families);
   }
 
-  function showOverlay(anchorEl, family, computedStyle, sources, noSource) {
+  function showOverlay(anchorEl, family, computedStyle, sources, noSource, allFamilies) {
     clearHover(); // give focus to the overlay panel
     hideOverlay();
+    const familyList = allFamilies && allFamilies.length ? allFamilies : [family];
     if (!overlayEl) {
       overlayEl = document.createElement('div');
       overlayEl.id = 'font-snatcher-overlay';
@@ -501,6 +502,18 @@
         .close{position:absolute;top:8px;right:10px;border:none;background:none;font-size:16px;
                cursor:pointer;color:#57606a;line-height:1;padding:2px 4px;}
         .no-src{color:#d93025;font-size:12px;margin-top:8px;}
+        .btn-local{margin-top:10px;width:100%;border:1px solid #c9d1d9;background:#f6f8fa;
+                   color:#24292f;border-radius:6px;padding:8px 0;cursor:pointer;
+                   font:13px/1 system-ui,sans-serif;}
+        .btn-local:hover{background:#eef1f4;}
+        .btn-local:disabled{opacity:.6;cursor:default;}
+        .cmd{width:100%;box-sizing:border-box;margin-top:8px;font:11px/1.4 Consolas,monospace;
+             border:1px solid #d0d7de;border-radius:6px;padding:6px;color:#24292f;
+             word-break:break-all;}
+        .btn-copy{margin-top:6px;width:100%;border:none;background:#6e7781;color:#fff;
+                  border-radius:6px;padding:7px 0;cursor:pointer;font:13px/1 system-ui,sans-serif;}
+        .btn-copy:hover{background:#57606a;}
+        .info{color:#57606a;font-size:12px;margin-top:8px;white-space:pre-line;}
         .ok{color:#188038;font-size:12px;margin-top:8px;}
         .err{color:#d93025;font-size:12px;margin-top:8px;}
         .prog{display:none;margin-top:10px;}
@@ -577,8 +590,70 @@
     } else {
       const ns = document.createElement('div');
       ns.className = 'no-src';
-      ns.textContent = '找不到可下载来源，可尝试其他文字或点击「查看全部字体」清单。';
+      ns.textContent = '这是系统字体，不在网页上。可尝试将其本地字体文件导出。';
       panel.appendChild(ns);
+
+      // "Export local font" button for system fonts.
+      const locBtn = document.createElement('button');
+      locBtn.className = 'btn btn-local';
+      locBtn.textContent = '📁 导出本地字体文件';
+      locBtn.addEventListener('click', async () => {
+        locBtn.disabled = true;
+        locBtn.textContent = '查询中…';
+        try {
+          const resp = await chrome.runtime.sendMessage({
+            type: 'EXPORT_LOCAL_FONT',
+            families: familyList,
+          });
+          if (!resp || !resp.ok) {
+            localMsg.textContent = '✗ ' + ((resp && resp.error) || '无法导出');
+            localMsg.className = 'err';
+            locBtn.textContent = '📁 导出本地字体文件';
+            locBtn.disabled = false;
+            return;
+          }
+          // Show info + command + copy button.
+          localMsg.textContent = resp.hint || '';
+          localMsg.className = 'info';
+          cmdBox.textContent = resp.command;
+          copyBtn.hidden = false;
+          locBtn.textContent = '✅ ' + resp.name + '（' + resp.file + '）';
+        } catch (err) {
+          localMsg.textContent = '✗ ' + err.message;
+          localMsg.className = 'err';
+          locBtn.textContent = '📁 导出本地字体文件';
+          locBtn.disabled = false;
+        }
+      });
+      panel.appendChild(locBtn);
+
+      // Message + command area (created now, filled on click).
+      const localMsg = document.createElement('div');
+      localMsg.className = 'info';
+      localMsg.textContent = '';
+      panel.appendChild(localMsg);
+
+      const cmdBox = document.createElement('textarea');
+      cmdBox.className = 'cmd';
+      cmdBox.readOnly = true;
+      cmdBox.rows = 4;
+      panel.appendChild(cmdBox);
+
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'btn btn-copy';
+      copyBtn.textContent = '📋 复制命令';
+      copyBtn.hidden = true;
+      copyBtn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(cmdBox.value);
+          copyBtn.textContent = '✓ 已复制，打开 PowerShell 粘贴运行';
+        } catch (_) {
+          cmdBox.select();
+          document.execCommand('copy');
+          copyBtn.textContent = '✓ 已复制，打开 PowerShell 粘贴运行';
+        }
+      });
+      panel.appendChild(copyBtn);
     }
 
     const close = document.createElement('button');

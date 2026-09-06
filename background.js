@@ -11788,6 +11788,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           return await handleDownloadFont(message);
         case 'DOWNLOAD_FONT_B64':
           return await handleDownloadFontB64(message);
+        case 'EXPORT_LOCAL_FONT':
+          return await handleExportLocalFont(message);
         case 'GET_FONT_SOURCES':
           return await handleGetFontSources(message);
         case 'WATCH_DOWNLOAD':
@@ -12166,6 +12168,101 @@ async function convertAndSave(bytes, wantTtf, base) {
   }
 
   return await saveDownload(finalBytes, ext, sanitizeFilename(base));
+}
+
+// ---------------------------------------------------------------------------
+// EXPORT_LOCAL_FONT: the page uses a system (local) font family, not a
+// webfont. We can't download it via HTTP, but we can point the user at the
+// local font file and generate a one-line command to copy it to their Desktop
+// or Downloads folder.
+// ---------------------------------------------------------------------------
+const LOCAL_FONT_MAP = {
+  // Windows (file names in C:\Windows\Fonts)
+  'simsun': { name: '宋体 (SimSun)', file: 'simsun.ttc', win: 'simsun.ttc', mac: null },
+  '宋体': { name: '宋体 (SimSun)', file: 'simsun.ttc', win: 'simsun.ttc', mac: null },
+  'songti sc': { name: '宋体-简 (Songti SC)', file: 'Songti.ttc', win: null, mac: '/System/Library/Fonts/Songti.ttc' },
+  'songti tc': { name: '宋体-繁', file: 'Songti.ttc', win: null, mac: '/System/Library/Fonts/Songti.ttc' },
+  'simhei': { name: '黑体 (SimHei)', file: 'simhei.ttf', win: 'simhei.ttf', mac: null },
+  'heiti sc': { name: '黑体-简', file: 'Heiti.ttc', win: null, mac: '/System/Library/Fonts/Heiti.ttc' },
+  'microsoft yahei': { name: '微软雅黑 (Microsoft YaHei)', file: 'msyh.ttc', win: 'msyh.ttc', mac: null },
+  '微软雅黑': { name: '微软雅黑', file: 'msyh.ttc', win: 'msyh.ttc', mac: null },
+  'pingfang sc': { name: '苹方 (PingFang SC)', file: 'PingFang.ttc', win: null, mac: '/System/Library/Fonts/PingFang.ttc' },
+  'pingfang': { name: '苹方', file: 'PingFang.ttc', win: null, mac: '/System/Library/Fonts/PingFang.ttc' },
+  'simkai': { name: '楷体 (KaiTi)', file: 'simkai.ttf', win: 'simkai.ttf', mac: null },
+  '楷体': { name: '楷体', file: 'simkai.ttf', win: 'simkai.ttf', mac: null },
+  'kaiti sc': { name: '楷体-简', file: 'Kaiti.ttc', win: null, mac: '/System/Library/Fonts/Kaiti.ttc' },
+  'simfang': { name: '仿宋 (FangSong)', file: 'simfang.ttf', win: 'simfang.ttf', mac: null },
+  '仿宋': { name: '仿宋', file: 'simfang.ttf', win: 'simfang.ttf', mac: null },
+  'arial': { name: 'Arial', file: 'arial.ttf', win: 'arial.ttf', mac: '/Library/Fonts/Arial.ttf' },
+  'times new roman': { name: 'Times New Roman', file: 'times.ttf', win: 'times.ttf', mac: '/Library/Fonts/Times New Roman.ttf' },
+  'georgia': { name: 'Georgia', file: 'georgia.ttf', win: 'georgia.ttf', mac: '/Library/Fonts/Georgia.ttf' },
+  'verdana': { name: 'Verdana', file: 'verdana.ttf', win: 'verdana.ttf', mac: '/Library/Fonts/Verdana.ttf' },
+  'tahoma': { name: 'Tahoma', file: 'tahoma.ttf', win: 'tahoma.ttf', mac: null },
+  'consolas': { name: 'Consolas', file: 'consola.ttf', win: 'consola.ttf', mac: null },
+  'courrier new': { name: 'Courier New', file: 'cour.ttf', win: 'cour.ttf', mac: '/Library/Fonts/Courier New.ttf' },
+  'courier new': { name: 'Courier New', file: 'cour.ttf', win: 'cour.ttf', mac: '/Library/Fonts/Courier New.ttf' },
+  'impact': { name: 'Impact', file: 'impact.ttf', win: 'impact.ttf', mac: null },
+  'lucida console': { name: 'Lucida Console', file: 'lucon.ttf', win: 'lucon.ttf', mac: null },
+  'noto serif cjk sc': { name: 'Noto Serif CJK SC', file: 'NotoSerifCJKsc-Regular.otf', win: null, mac: null },
+  'noto sans cjk sc': { name: 'Noto Sans CJK SC', file: 'NotoSansCJKsc-Regular.otf', win: null, mac: null },
+  'noto sans sc': { name: 'Noto Sans SC', file: 'NotoSansSC-Regular.otf', win: null, mac: null },
+  'noto serif sc': { name: 'Noto Serif SC', file: 'NotoSerifSC-Regular.otf', win: null, mac: null },
+  'segoui': { name: 'Segoe UI', file: 'segoeui.ttf', win: 'segoeui.ttf', mac: null },
+  'segoe ui': { name: 'Segoe UI', file: 'segoeui.ttf', win: 'segoeui.ttf', mac: null },
+  '微软雅黑 ui': { name: 'Microsoft YaHei UI', file: 'msyh.ttc', win: 'msyh.ttc', mac: null },
+  'stsong': { name: '华文宋体 (STSong)', file: 'STSONG.TTF', win: null, mac: null },
+  'stsong': { name: '华文宋体 (STSong)', file: 'STSONG.TTF', win: null, mac: null },
+  'staixihei': { name: '华文细黑 (STXihei)', file: 'STXIHEI.TTF', win: null, mac: null },
+  'stxihei': { name: '华文细黑 (STXihei)', file: 'STXIHEI.TTF', win: null, mac: null },
+  'dfkai-sb': { name: '华文楷体 (STKaiti)', file: 'STKAITI.TTF', win: null, mac: null },
+};
+
+function lookupLocalFont(family) {
+  const f = String(family || '').replace(/['"]/g, '').trim().toLowerCase();
+  return LOCAL_FONT_MAP[f] || null;
+}
+
+async function handleExportLocalFont(message) {
+  const families = Array.isArray(message.families) ? message.families : [message.family];
+  // Platform (default Windows in JS envs).
+  const plat = (typeof navigator !== 'undefined' ? navigator.platform : '') || '';
+  const isMac = /mac|iPhone|iPad/i.test(plat);
+  const isWin = !isMac;
+
+  // Find the first family in the chain that maps to a local font file WE CAN
+  // export on THIS platform (skips entries like Songti-SC on Windows).
+  let info = null;
+  for (const fam of families) {
+    const cand = lookupLocalFont(fam);
+    if (!cand) continue;
+    const src = (isWin ? cand.win : isMac ? cand.mac : cand.win);
+    if (src) { info = cand; break; }
+  }
+  if (!info) return { ok: false, error: '未识别这些字体对应的本地文件' };
+
+  const sourcePath = (isWin ? info.win : isMac ? info.mac : info.win)
+    ? ('C:\\Windows\\Fonts\\' + info.win)
+    : null;
+  if (!sourcePath) {
+    return { ok: false, error: `「${info.name}」暂不支持自动导出（文件：${info.file}）。请手动从系统字体目录复制。` };
+  }
+
+  // PowerShell command that copies the font to the user's Desktop + Downloads.
+  const ps = [
+    '$src = ' + JSON.stringify(sourcePath),
+    '$dest1 = [Environment]::GetFolderPath("Desktop")',
+    '$dest2 = [Environment]::GetFolderPath("UserProfile") + "\\Downloads"',
+    'if (Test-Path $src) { Copy-Item -LiteralPath $src -Destination (Join-Path $dest1 ' + JSON.stringify(info.file) + ') -Force; Write-Host "已复制到桌面: ' + info.file + '" } else { Write-Host "未找到系统字体文件: ' + sourcePath + '" }',
+  ].join('; ');
+
+  return {
+    ok: true,
+    name: info.name,
+    file: info.file,
+    sourcePath,
+    command: ps,
+    hint: `网页使用了系统字体「${info.name}」，它不在网页上、无法直接下载。\n已生成复制命令：将字体文件复制到桌面/下载目录。`,
+  };
 }
 
 // Save bytes via chrome.downloads.
